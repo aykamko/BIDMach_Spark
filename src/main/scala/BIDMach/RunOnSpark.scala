@@ -7,6 +7,7 @@ import BIDMach.updaters.Batch
 import BIDMat.{MatIO, SerText}
 import BIDMat.SciFunctions._
 import org.apache.spark.rdd.RDD
+import org.apache.spark.storage.StorageLevel
 import org.apache.hadoop.io.Text;
 import org.apache.spark.SparkContext
 import scala.reflect.ClassTag
@@ -108,9 +109,9 @@ object RunOnSpark{
     Iterator[Learner](learner)
   }
 
-  def wrapUpLearner(learner_iterator: Iterator[Learner]): Iterator[Learner] = {
+  def wrapUpLearner(ipass: Int)(learner_iterator: Iterator[Learner]): Iterator[Learner] = {
     val learner = learner_iterator.next
-    learner.wrapUp
+    learner.wrapUp(ipass)
     Iterator[Learner](learner)
   }
 
@@ -125,7 +126,8 @@ object RunOnSpark{
     Mat.checkMKL(true)
     Mat.hasCUDA = 0
     Mat.checkCUDA(true)
-    var rdd_learner: RDD[Learner] = rdd_data.mapPartitions[Learner](firstPass(learner), preservesPartitioning=true).persist()
+    var rdd_learner: RDD[Learner] = rdd_data.mapPartitions[Learner](firstPass(learner), preservesPartitioning=true).
+      persist(StorageLevel.MEMORY_AND_DISK)
     var reduced_learner = rdd_learner.treeReduce(reduce_fn(0), 2)
     // Once we've reduced our distributed learners into one learner, we can update our model.
     reduced_learner.updateM(0)
@@ -134,7 +136,8 @@ object RunOnSpark{
     for (i <- 1 until learner.opts.npasses) {
       // Call nextPass on each learner and reduce the learners into one learner
       val t0 = System.nanoTime()
-      val tmp_learner = rdd_data.zipPartitions(rdd_learner, preservesPartitioning=true)(nextPass(reduced_learner)).persist()
+      val tmp_learner = rdd_data.zipPartitions(rdd_learner, preservesPartitioning=true)(nextPass(reduced_learner)).
+        persist(StorageLevel.MEMORY_AND_DISK)
 
       reduced_learner = tmp_learner.treeReduce(reduce_fn(i), 2)
       rdd_learner.unpersist()
@@ -145,7 +148,7 @@ object RunOnSpark{
       reduced_learner.updateM(i)
     }
     // Note: The returned RDD has a transformation applied to it.
-    rdd_learner = rdd_learner.mapPartitions(wrapUpLearner, preservesPartitioning=true)
+    rdd_learner = rdd_learner.mapPartitions(wrapUpLearner(learner.opts.npasses), preservesPartitioning=true)
     rdd_learner.collect()
   }
 }

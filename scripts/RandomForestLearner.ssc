@@ -1,0 +1,58 @@
+import org.apache.spark.rdd.RDD
+import scala.reflect.ClassTag
+import BIDMat.MatIO
+import BIDMat.SerText
+import BIDMach.RunOnSpark._
+import BIDMach.Learner
+import BIDMach.models.RandomForest
+import BIDMach.datasources.IteratorSource
+import org.apache.spark.HashPartitioner
+import org.apache.spark.storage.StorageLevel
+
+// Specify IP address of master here
+val MASTER_DNS = java.net.InetAddress.getLocalHost.getHostAddress
+val num_executors = 4
+
+val rdd_data = sc.sequenceFile("hdfs://%s:9000/BIDMach_MNIST/rf_data_merged_20.fmat.lz4".format(MASTER_DNS),
+                               classOf[SerText],
+			       classOf[BIDMat.MatIO]
+			      ).partitionBy(new HashPartitioner(num_executors * 2)).persist(StorageLevel.MEMORY_AND_DISK)
+
+val (learner,opts) = RandomForest.learner()
+opts.batchSize = 20000
+opts.depth =  24
+opts.depth = 5
+opts.ntrees = 100
+opts.impurity = 0
+opts.ncats = 10
+
+opts.nsamps = 12
+opts.nnodes = 10000
+opts.nbits = 16
+
+def time[R](block: => R): R = {
+    val t0 = System.nanoTime()
+    val result = block
+    val t1 = System.nanoTime()
+    println("Elapsed time: " + (t1 - t0)/math.pow(10, 9)+ "s")
+    result
+}
+val result = time {runOnSpark(sc, learner, rdd_data, num_executors)}
+
+println()
+println("Done training! Testing first tree")
+
+val (t1pp, popts) = RandomForest.predictor(result(0).model, null)
+val i_opts = new IteratorSource.Options
+
+val rdd_predict = sc.sequenceFile("hdfs://%s:9000/BIDMach_MNIST/rf_data_merged_10.fmat.lz4".format(MASTER_DNS),
+                               classOf[SerText],
+			       classOf[BIDMat.MatIO])
+i_opts.iter = rdd_predict.toLocalIterator
+
+// TODO: RandomForest.predictor doesn't take an Iterator as a Datasource yet
+// t1pp.datasource = new IteratorSource(i_opts)
+//
+// println("Predicting")
+// t1pp.predict
+//
